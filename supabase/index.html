@@ -143,7 +143,7 @@
     const { useState, useEffect, useMemo, useCallback, createContext, useContext } = React;
 
     // ============================================================
-    //  🔧 FIXED: SUPABASE CONFIGURATION (REMOVED EXTRA "Y")
+    //  🔧 SUPABASE CONFIGURATION
     // ============================================================
     const SUPABASE_URL = "https://ykooktqnxunmoenucdoy.supabase.co";
     const SUPABASE_ANON_KEY = "sb_publishable_Wo14uG3EowORP_eHV7SMlw_o1HLqU0f";
@@ -151,10 +151,10 @@
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     // ============================================================
-    //  CONSTANTS (unchanged - all your existing constants here)
+    //  CONSTANTS (unchanged)
     // ============================================================
     const ROLES = {
-      SECTION: { id: "SECTION", label: "अनुभाग", icon: "🏢", color: "#6366f1", bg: "#eef2ff",
+      SECTION: { id: "SECTION", label: "DEO/Clerk", icon: "🏢", color: "#6366f1", bg: "#eef2ff",
         grad: "linear-gradient(135deg,#6366f1,#8b5cf6)" },
       AAO: { id: "AAO", label: "AAO", icon: "🔎", color: "#0ea5e9", bg: "#f0f9ff",
         grad: "linear-gradient(135deg,#0ea5e9,#6366f1)" },
@@ -175,6 +175,34 @@
       SUBMITTED: { id: "SUBMITTED", label: "हिंदी प्रकोष्ठ स्वीकृत", icon: "🎉", color: "#16a34a", bg: "#dcfce7" },
       REJECTED: { id: "REJECTED", label: "अस्वीकृत", icon: "❌", color: "#dc2626", bg: "#fee2e2" },
     };
+
+    const WORKFLOW_ACTIONS = {
+      SECTION: {
+        AAO_RETURNED: [{ label: "✅ AAO को पुनः भेजें", action: "PENDING_AAO",
+          grad: "linear-gradient(135deg,#10b981,#0ea5e9)" }],
+      },
+      AAO: {
+        PENDING_AAO: [{ label: "✅ SAO को अग्रेषित करें", action: "AAO_APPROVED",
+          grad: "linear-gradient(135deg,#10b981,#0ea5e9)" }, { label: "↩️ अनुभाग को वापस करें",
+          action: "AAO_RETURNED", grad: "linear-gradient(135deg,#f97316,#ef4444)" }],
+        SAO_RETURNED: [{ label: "✅ SAO को पुनः भेजें", action: "AAO_APPROVED",
+          grad: "linear-gradient(135deg,#10b981,#0ea5e9)" }, { label: "↩️ अनुभाग को वापस करें",
+          action: "AAO_RETURNED", grad: "linear-gradient(135deg,#f97316,#ef4444)" }],
+      },
+      SAO: {
+        AAO_APPROVED: [{ label: "✅ हिंदी प्रकोष्ठ को भेजें", action: "SAO_APPROVED",
+          grad: "linear-gradient(135deg,#10b981,#0ea5e9)" }, { label: "↩️ AAO को वापस करें",
+          action: "SAO_RETURNED", grad: "linear-gradient(135deg,#f97316,#ef4444)" }],
+      },
+      HINDI_CELL: {
+        SAO_APPROVED: [{ label: "🎉 अंतिम स्वीकृति दें", action: "SUBMITTED",
+          grad: "linear-gradient(135deg,#f59e0b,#10b981)" }, { label: "↩️ SAO को वापस करें",
+          action: "SAO_RETURNED", grad: "linear-gradient(135deg,#dc2626,#9f1239)" }],
+      },
+    };
+
+    const workflowActionsFor = (role, status) => WORKFLOW_ACTIONS[role]?.[status] || [];
+    const canActOnReport = (user, report) => workflowActionsFor(user.role, report.status).length > 0;
 
     const FIELD_LABELS_HINDI = {
       officeNameAddress: "कार्यालय का नाम व पता",
@@ -485,7 +513,7 @@
     }
 
     // ============================================================
-    //  AUTH CONTEXT (unchanged)
+    //  AUTH CONTEXT (with FIXED fetchProfile – no email fallback)
     // ============================================================
     const AuthContext = createContext(null);
 
@@ -494,23 +522,43 @@
       const [profile, setProfile] = useState(null);
       const [loading, setLoading] = useState(true);
 
-      const fetchProfile = useCallback(async (userId) => {
+      // ============================================================
+      //  🔧 FIXED: fetchProfile – only uses ID, no email query
+      // ============================================================
+      const fetchProfile = useCallback(async (authUser) => {
+        const userId = typeof authUser === "string" ? authUser : authUser?.id;
         const { data, error } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', userId)
-          .single();
-        if (!error && data) {
-          setProfile(data);
+          .limit(1);
+
+        if (error) {
+          setProfile(null);
+          throw new Error(error.message);
         }
-        return data;
+
+        const profileRow = data?.[0];
+        if (!profileRow) {
+          setProfile(null);
+          throw new Error(`No profile found for user.`);
+        }
+        setProfile(profileRow);
+        return profileRow;
       }, []);
 
       useEffect(() => {
-        supabase.auth.getSession().then(({ data: { session } }) => {
+        supabase.auth.getSession().then(async ({ data: { session } }) => {
           if (session) {
             setUser(session.user);
-            fetchProfile(session.user.id);
+            try {
+              await fetchProfile(session.user);
+            } catch (error) {
+              console.error("Profile load failed", error);
+              await supabase.auth.signOut();
+              setUser(null);
+              setProfile(null);
+            }
           }
           setLoading(false);
         });
@@ -519,7 +567,14 @@
           async (event, session) => {
             if (session) {
               setUser(session.user);
-              await fetchProfile(session.user.id);
+              try {
+                await fetchProfile(session.user);
+              } catch (error) {
+                console.error("Profile load failed", error);
+                await supabase.auth.signOut();
+                setUser(null);
+                setProfile(null);
+              }
             } else {
               setUser(null);
               setProfile(null);
@@ -534,6 +589,8 @@
       const signIn = async (email, password) => {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+        if (!data.user) throw new Error("Login succeeded but no user session was returned.");
+        await fetchProfile(data.user);
         return data;
       };
 
@@ -904,7 +961,7 @@
     }
 
     // ============================================================
-    //  REPORT FORM (unchanged - same as your original)
+    //  REPORT FORM (unchanged)
     // ============================================================
     function ReportForm({ onSave, user, reports, initialData, onCancel }) {
       const [data, setData] = useState(initialData || emptyForm());
@@ -1382,33 +1439,8 @@
 
       if (selected) {
         const st = STATUS[selected.status] || STATUS.DRAFT;
-        const canAct = (user.role === "SECTION" && selected.status === "AAO_RETURNED") ||
-          (user.role === "AAO" && ["PENDING_AAO", "SAO_RETURNED"].includes(selected.status)) ||
-          (user.role === "SAO" && selected.status === "AAO_APPROVED") ||
-          (user.role === "HINDI_CELL" && selected.status === "SAO_APPROVED");
-
-        const actionBtns = {
-          SECTION: selected.status === "AAO_RETURNED" ? [{ label: "✅ AAO को पुनः भेजें", action: "PENDING_AAO",
-              grad: "linear-gradient(135deg,#10b981,#0ea5e9)"
-            }] : [],
-          AAO: selected.status === "SAO_RETURNED" ? [{ label: "✅ SAO को पुनः भेजें", action: "AAO_APPROVED",
-              grad: "linear-gradient(135deg,#10b981,#0ea5e9)"
-            }] : [{ label: "✅ SAO को अग्रेषित करें", action: "AAO_APPROVED",
-              grad: "linear-gradient(135deg,#10b981,#0ea5e9)"
-            }, { label: "↩️ अनुभाग को वापस करें", action: "AAO_RETURNED",
-              grad: "linear-gradient(135deg,#f97316,#ef4444)"
-            }],
-          SAO: [{ label: "✅ हिंदी प्रकोष्ठ को भेजें", action: "SAO_APPROVED",
-              grad: "linear-gradient(135deg,#10b981,#0ea5e9)"
-            }, { label: "↩️ AAO को वापस करें", action: "SAO_RETURNED",
-              grad: "linear-gradient(135deg,#f97316,#ef4444)"
-            }],
-          HINDI_CELL: [{ label: "🎉 अंतिम स्वीकृति दें", action: "SUBMITTED",
-              grad: "linear-gradient(135deg,#f59e0b,#10b981)"
-            }, { label: "↩️ SAO को वापस करें", action: "SAO_RETURNED",
-              grad: "linear-gradient(135deg,#dc2626,#9f1239)"
-            }],
-        };
+        const actionBtns = workflowActionsFor(user.role, selected.status);
+        const canAct = actionBtns.length > 0;
 
         return (
           <div style={{ maxWidth: 760, margin: "0 auto" }}>
@@ -1448,7 +1480,7 @@
                 style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1.5px solid #e2e8f0",
                   marginBottom: 12 }} />
                 <div style={{ display: "flex", gap: 12 }}>
-                  {(actionBtns[user.role] || []).map(btn => (
+                  {actionBtns.map(btn => (
                     <button key={btn.action} onClick={() => { onAction(selected, btn.action, remark);
                         setSelected(null);
                         setRemark(""); }}
@@ -1485,10 +1517,7 @@
             filtered.map((rep, i) => {
               const st = STATUS[rep.status] || STATUS.DRAFT;
               const c = SECTION_COLORS[i % SECTION_COLORS.length];
-              const canAct = (user.role === "SECTION" && rep.status === "AAO_RETURNED") ||
-                (user.role === "AAO" && ["PENDING_AAO", "SAO_RETURNED"].includes(rep.status)) ||
-                (user.role === "SAO" && rep.status === "AAO_APPROVED") ||
-                (user.role === "HINDI_CELL" && rep.status === "SAO_APPROVED");
+              const canAct = canActOnReport(user, rep);
 
               return (
                 <div key={rep.id} onClick={() => setSelected(rep)}
@@ -1761,7 +1790,7 @@
     }
 
     // ============================================================
-    //  🔧 FIXED: MASTER CONTROL (Fixed .neq → .not)
+    //  MASTER CONTROL (Fixed .neq → .not)
     // ============================================================
     function MasterControl({ reports, sections, onEditReport }) {
       const [searchQuery, setSearchQuery] = useState("");
@@ -1801,7 +1830,6 @@
         if (pass !== "RESET") return;
         setIsClearing(true);
         try {
-          // ✅ FIXED: Using .not() instead of .neq()
           const { error } = await supabaseClient
             .from('reports')
             .delete()
@@ -1896,7 +1924,7 @@
     }
 
     // ============================================================
-    //  MAIN APP (unchanged)
+    //  MAIN APP
     // ============================================================
     function App() {
       return (
@@ -1912,6 +1940,10 @@
       if (loading) return <LoadingSpinner />;
       if (!user || !profile) return <LoginScreen />;
 
+      return <AuthenticatedApp user={user} profile={profile} signOut={signOut} />;
+    }
+
+    function AuthenticatedApp({ user, profile, signOut }) {
       const { reports, loading: reportsLoading } = useReports();
       const { sections, loading: sectionsLoading } = useSections();
       const { supabase: supabaseClient } = useAuth();
@@ -1959,18 +1991,16 @@
       };
 
       const handleAction = async (report, action, remark) => {
-        const timelineEntry = {
-          ts: new Date().toISOString(),
-          role: profile.role,
-          name: profile.section_name || profile.role,
-          action: action,
-          remark: remark || ''
-        };
-        const updatedTimeline = [...(report.timeline || []), timelineEntry];
-        const { error } = await supabaseClient
-          .from('reports')
-          .update({ status: action, timeline: updatedTimeline, updated_at: new Date().toISOString() })
-          .eq('id', report.id);
+        if (!workflowActionsFor(profile.role, report.status).some(btn => btn.action === action)) {
+          alert('This workflow transition is not allowed for your role.');
+          return;
+        }
+
+        const { error } = await supabaseClient.rpc('transition_report', {
+          p_report_id: report.id,
+          p_next_status: action,
+          p_remark: remark || ''
+        });
         if (error) alert('Error: ' + error.message);
       };
 
