@@ -4,9 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#312e81" />
-  <link rel="manifest" href="manifest.json" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="राजभाषा QPR" />
   <title>राजभाषा QPR · Supabase</title>
 
@@ -511,54 +509,9 @@
         b2_website_lang_option: "नहीं",
       };
     }
-function useReports() {
-  const [reports, setReports] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const { user, profile, supabase: supabaseClient } = useAuth();
 
-  useEffect(() => {
-    if (!user) {
-      setReports([]);
-      setLoading(false);
-      return;
-    }
-
-    const fetchReports = async () => {
-      let query = supabaseClient.from('reports').select('*');
-      if (profile?.role === 'SECTION') {
-        query = query.eq('section_name', profile.section_name);
-      } else if (profile?.role === 'AAO') {
-        query = query.in('status', ['PENDING_AAO', 'SAO_RETURNED'])
-          .eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'SAO') {
-        query = query.eq('status', 'AAO_APPROVED')
-          .eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'HINDI_CELL') {
-        query = query.eq('status', 'SAO_APPROVED');
-      }
-      const { data, error } = await query.order('created_at', { ascending: false });
-      if (!error) setReports(data || []);
-      setLoading(false);
-    };
-
-    fetchReports();
-
-    // Create a unique channel name to avoid conflicts
-    const channelName = `reports_changes_${Date.now()}`;
-    const channel = supabaseClient
-      .channel(channelName)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => fetchReports())
-      .subscribe();
-
-    return () => {
-      supabaseClient.removeChannel(channel);
-    };
-  }, [user, profile, supabaseClient]);
-
-  return { reports, loading };
-}
     // ============================================================
-    //  AUTH CONTEXT (with FIXED fetchProfile – no email fallback)
+    //  AUTH CONTEXT (with fixed fetchProfile – no email fallback)
     // ============================================================
     const AuthContext = createContext(null);
 
@@ -567,9 +520,6 @@ function useReports() {
       const [profile, setProfile] = useState(null);
       const [loading, setLoading] = useState(true);
 
-      // ============================================================
-      //  🔧 FIXED: fetchProfile – only uses ID, no email query
-      // ============================================================
       const fetchProfile = useCallback(async (authUser) => {
         const userId = typeof authUser === "string" ? authUser : authUser?.id;
         const { data, error } = await supabase
@@ -655,7 +605,7 @@ function useReports() {
     function useAuth() { return useContext(AuthContext); }
 
     // ============================================================
-    //  DATA HOOKS (unchanged)
+    //  DATA HOOKS – FIXED useReports with unique channel name
     // ============================================================
     function useReports() {
       const [reports, setReports] = useState([]);
@@ -663,8 +613,11 @@ function useReports() {
       const { user, profile, supabase: supabaseClient } = useAuth();
 
       useEffect(() => {
-        if (!user) { setReports([]);
-          setLoading(false); return; }
+        if (!user) {
+          setReports([]);
+          setLoading(false);
+          return;
+        }
 
         const fetchReports = async () => {
           let query = supabaseClient.from('reports').select('*');
@@ -686,13 +639,17 @@ function useReports() {
 
         fetchReports();
 
+        // Use a unique channel name to avoid conflicts
+        const channelName = `reports_changes_${Date.now()}`;
         const channel = supabaseClient
-          .channel('reports_changes')
+          .channel(channelName)
           .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => fetchReports())
           .subscribe();
 
-        return () => { supabaseClient.removeChannel(channel); };
-      }, [user, profile]);
+        return () => {
+          supabaseClient.removeChannel(channel);
+        };
+      }, [user, profile, supabaseClient]);
 
       return { reports, loading };
     }
