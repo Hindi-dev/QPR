@@ -276,6 +276,11 @@
             }
           }
           setLoading(false);
+        }).catch((error) => {
+          console.error("Failed to restore session", error);
+          setUser(null);
+          setProfile(null);
+          setLoading(false);
         });
 
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -330,11 +335,13 @@
     function useReports() {
       const [reports, setReports] = useState([]);
       const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
       const { user, profile, supabase: supabaseClient } = useAuth();
 
       useEffect(() => {
         if (!user || !profile) {
           setReports([]);
+          setError(null);
           setLoading(false);
           return;
         }
@@ -351,88 +358,54 @@
             query = query.eq('status', 'SAO_APPROVED');
           }
           const { data, error } = await query.order('created_at', { ascending: false });
-          if (!error) setReports(data || []);
+          if (error) {
+            console.error('Failed to load reports', error);
+            setError(error.message);
+          } else {
+            setReports(data || []);
+            setError(null);
+          }
           setLoading(false);
         };
 
         fetchReports();
 
-        function useReports() {
-  const [reports, setReports] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const { user, profile, supabase: supabaseClient } = useAuth();
+        const channel = supabaseClient
+          .channel('db-reports-changes')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'reports' },
+            () => {
+              fetchReports();
+            }
+          );
 
-  useEffect(() => {
-    // 1. Guard clause: Don't run anything if auth isn't ready
-    if (!user || !profile) {
-      setReports([]);
-      setLoading(false);
-      return;
-    }
-
-    const fetchReports = async () => {
-      let query = supabaseClient.from('reports').select('*');
-      if (profile?.role === 'SECTION') {
-        query = query.eq('section_name', profile.section_name);
-      } else if (profile?.role === 'AAO') {
-        query = query.in('status', ['PENDING_AAO', 'SAO_RETURNED']).eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'SAO') {
-        query = query.eq('status', 'AAO_APPROVED').eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'HINDI_CELL') {
-        query = query.eq('status', 'SAO_APPROVED');
-      }
-      const { data, error } = await query.order('created_at', { ascending: false });
-      if (!error) setReports(data || []);
-      setLoading(false);
-    };
-
-    // Run the initial data fetch
-    fetchReports();
-
-    // 2. STABLE CHANNEL NAME: Keep it fixed per-hook instance instance
-    // 3. SEPARATE CHAINING: Define everything explicitly, then subscribe
-    const channel = supabaseClient
-      .channel('db-reports-changes')
-      .on(
-        'postgres_changes', 
-        { event: '*', schema: 'public', table: 'reports' }, 
-        () => {
-          fetchReports();
-        }
-      );
-
-    channel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Successfully connected to realtime reports stream.');
-      }
-    });
-
-    // 4. CLEANUP: This is critical. It wipes out the socket channel immediately 
-    // when the user profile switches or the component unmounts.
-    return () => {
-      supabaseClient.removeChannel(channel);
-    };
-  }, [user, profile, supabaseClient]);
-
-  return { reports, loading };
-}
+        channel.subscribe((status, err) => {
+          if (status === 'SUBSCRIBED') {
+            console.log('Successfully connected to realtime reports stream.');
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            console.error('Realtime reports subscription failed:', status, err);
+          }
+        });
 
         return () => {
           supabaseClient.removeChannel(channel);
         };
       }, [user, profile, supabaseClient]);
 
-      return { reports, loading };
+      return { reports, loading, error };
     }
 
     function useSections() {
       const [sections, setSections] = useState([]);
       const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
       const { supabase: supabaseClient, user } = useAuth();
 
       useEffect(() => {
         if (!user) { 
           setSections([]);
+          setError(null);
           setLoading(false); 
           return; 
         }
@@ -442,13 +415,19 @@
             .select('name')
             .eq('is_active', true)
             .order('name');
-          if (!error) setSections(data.map(s => s.name));
+          if (error) {
+            console.error('Failed to load sections', error);
+            setError(error.message);
+          } else {
+            setSections((data || []).map(s => s.name));
+            setError(null);
+          }
           setLoading(false);
         };
         fetchSections();
       }, [user]);
 
-      return { sections, loading };
+      return { sections, loading, error };
     }
 
     // ============================================================
@@ -1364,9 +1343,11 @@
     }
 
     function AuthenticatedApp({ user, profile, signOut }) {
-      const { reports, loading: reportsLoading } = useReports();
-      const { sections, loading: sectionsLoading } = useSections();
+      const { reports, loading: reportsLoading, error: reportsError } = useReports();
+      const { sections, loading: sectionsLoading, error: sectionsError } = useSections();
       const { supabase: supabaseClient } = useAuth();
+
+      const dataError = reportsError || sectionsError;
 
       const [view, setView] = useState('dashboard');
       const [editingReport, setEditingReport] = useState(null);
@@ -1377,15 +1358,16 @@
           try {
             const { data: validation, error: validationError } = await supabaseClient.functions.invoke('validate-report', { body: { report: reportToSave } });
             if (validationError) {
-              alert('Validation server error');
+              console.error('Validation server error', validationError);
+              alert('Validation server error: ' + validationError.message);
               return;
             }
-            if (!validation.valid) {
-              alert(`❌ ${validation.errors.join('\n')}`);
+            if (!validation?.valid) {
+              alert(`❌ ${(validation?.errors || ['Validation failed']).join('\n')}`);
               return;
             }
           } catch (e) {
-            console.warn('Edge function not available, using local validation');
+            console.error('Validation edge function could not be reached; skipping server-side validation.', e);
           }
         }
 
@@ -1421,6 +1403,11 @@
 
       return (
         <div style={{ minHeight: '100vh', background: '#f8fafc', fontFamily: "'Noto Sans Devanagari','Inter',sans-serif" }}>
+          {dataError && (
+            <div className="no-print" style={{ background: '#fee2e2', color: '#991b1b', padding: '10px 20px', fontSize: '13px', textAlign: 'center', fontWeight: 700 }}>
+              ⚠️ डेटा लोड करने में समस्या: {dataError}
+            </div>
+          )}
           <nav style={{ background: ROLES[profile.role]?.grad || ROLES[profile.role]?.color || '#6366f1', padding: '0 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '56px', position: 'sticky', top: 0, zIndex: 200, boxShadow: `0 2px 16px ${ROLES[profile.role]?.color || '#6366f1'}60` }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <span style={{ fontSize: '22px' }}>🏛️</span>

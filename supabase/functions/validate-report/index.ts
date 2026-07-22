@@ -26,7 +26,24 @@ export default {
     }
     */
 
-    const { name } = await req.json();
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch (_err) {
+      return Response.json(
+        { error: "Request body must be valid JSON." },
+        { status: 400 },
+      );
+    }
+
+    if (typeof body !== "object" || body === null || !("name" in body)) {
+      return Response.json(
+        { error: "Missing required field: 'name'." },
+        { status: 400 },
+      );
+    }
+
+    const { name } = body as { name: unknown };
 
     return Response.json({
       message: `Hello ${name}!`,
