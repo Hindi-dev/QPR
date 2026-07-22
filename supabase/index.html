@@ -701,9 +701,14 @@
           report.timeline = [...(report.timeline || []), { ts: new Date().toISOString(), role: user.role, name: user.section_name || user.role, action: "रिपोर्ट में संशोधन किया गया (Edited)", remark: "" }];
         }
 
-        await onSave(report);
-        setSubmitting(false);
-        setDone(true);
+        try {
+          await onSave(report);
+          setDone(true);
+        } catch (e) {
+          // onSave surfaces the error to the user; keep the form open so nothing is lost
+        } finally {
+          setSubmitting(false);
+        }
       };
 
       if (done) return (
@@ -1327,20 +1332,24 @@
       const [view, setView] = useState('dashboard');
       const [editingReport, setEditingReport] = useState(null);
 
+      const DATE_FIELDS = ['b1_s9_meeting_date', 'b1_s10_meeting_date'];
+
       const handleSaveReport = async (reportData) => {
         const reportToSave = { ...reportData };
+        DATE_FIELDS.forEach(k => { if (reportToSave[k] === '') reportToSave[k] = null; });
         if (!reportToSave.id) {
           try {
             const { data: validation, error: validationError } = await supabaseClient.functions.invoke('validate-report', { body: { report: reportToSave } });
             if (validationError) {
               alert('Validation server error');
-              return;
+              throw new Error('Validation server error');
             }
             if (!validation.valid) {
               alert(`❌ ${validation.errors.join('\n')}`);
-              return;
+              throw new Error('Report validation failed');
             }
           } catch (e) {
+            if (e instanceof Error && (e.message === 'Validation server error' || e.message === 'Report validation failed')) throw e;
             console.warn('Edge function not available, using local validation');
           }
         }
@@ -1350,10 +1359,10 @@
 
         if (reportToSave.id) {
           const { error } = await supabaseClient.from('reports').update(reportToSave).eq('id', reportToSave.id);
-          if (error) { alert('Error: ' + error.message); return; }
+          if (error) { alert('Error: ' + error.message); throw new Error(error.message); }
         } else {
           const { error } = await supabaseClient.from('reports').insert([reportToSave]);
-          if (error) { alert('Error: ' + error.message); return; }
+          if (error) { alert('Error: ' + error.message); throw new Error(error.message); }
         }
         setEditingReport(null);
         setView('inbox');
