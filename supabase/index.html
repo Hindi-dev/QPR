@@ -195,6 +195,8 @@
     ];
     const YEARS = ["2022", "2023", "2024", "2025", "2026", "2027", "2028", "2029", "2030"];
 
+    const quarterLabel = (id) => QUARTERS.find(q => q.id === id)?.label;
+
     const SECTION_COLORS = [
       { bg: "#ede9fe", border: "#8b5cf6", text: "#5b21b6", icon: "📜" },
       { bg: "#fce7f3", border: "#ec4899", text: "#9d174d", icon: "🏛️" },
@@ -262,44 +264,33 @@
         return profileRow;
       }, []);
 
-      useEffect(() => {
-        supabase.auth.getSession().then(async ({ data: { session } }) => {
-          if (session?.user) {
-            setUser(session.user);
-            try {
-              await fetchProfile(session.user);
-            } catch (error) {
-              console.error("Profile load failed", error);
-              await supabase.auth.signOut();
-              setUser(null);
-              setProfile(null);
-            }
+      const applySession = useCallback(async (session) => {
+        if (session?.user) {
+          setUser(session.user);
+          try {
+            await fetchProfile(session.user);
+          } catch (error) {
+            console.error("Profile load failed", error);
+            await supabase.auth.signOut();
+            setUser(null);
+            setProfile(null);
           }
-          setLoading(false);
-        });
+        } else {
+          setUser(null);
+          setProfile(null);
+        }
+        setLoading(false);
+      }, [fetchProfile]);
+
+      useEffect(() => {
+        supabase.auth.getSession().then(({ data: { session } }) => applySession(session));
 
         const { data: { subscription } } = supabase.auth.onAuthStateChange(
-          async (event, session) => {
-            if (session?.user) {
-              setUser(session.user);
-              try {
-                await fetchProfile(session.user);
-              } catch (error) {
-                console.error("Profile load failed", error);
-                await supabase.auth.signOut();
-                setUser(null);
-                setProfile(null);
-              }
-            } else {
-              setUser(null);
-              setProfile(null);
-            }
-            setLoading(false);
-          }
+          (event, session) => applySession(session)
         );
 
         return () => subscription.unsubscribe();
-      }, [fetchProfile]);
+      }, [applySession]);
 
       const signIn = async (email, password) => {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
@@ -357,65 +348,19 @@
 
         fetchReports();
 
-        function useReports() {
-  const [reports, setReports] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const { user, profile, supabase: supabaseClient } = useAuth();
+        const channel = supabaseClient
+          .channel('db-reports-changes')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'reports' },
+            () => { fetchReports(); }
+          );
 
-  useEffect(() => {
-    // 1. Guard clause: Don't run anything if auth isn't ready
-    if (!user || !profile) {
-      setReports([]);
-      setLoading(false);
-      return;
-    }
-
-    const fetchReports = async () => {
-      let query = supabaseClient.from('reports').select('*');
-      if (profile?.role === 'SECTION') {
-        query = query.eq('section_name', profile.section_name);
-      } else if (profile?.role === 'AAO') {
-        query = query.in('status', ['PENDING_AAO', 'SAO_RETURNED']).eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'SAO') {
-        query = query.eq('status', 'AAO_APPROVED').eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'HINDI_CELL') {
-        query = query.eq('status', 'SAO_APPROVED');
-      }
-      const { data, error } = await query.order('created_at', { ascending: false });
-      if (!error) setReports(data || []);
-      setLoading(false);
-    };
-
-    // Run the initial data fetch
-    fetchReports();
-
-    // 2. STABLE CHANNEL NAME: Keep it fixed per-hook instance instance
-    // 3. SEPARATE CHAINING: Define everything explicitly, then subscribe
-    const channel = supabaseClient
-      .channel('db-reports-changes')
-      .on(
-        'postgres_changes', 
-        { event: '*', schema: 'public', table: 'reports' }, 
-        () => {
-          fetchReports();
-        }
-      );
-
-    channel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Successfully connected to realtime reports stream.');
-      }
-    });
-
-    // 4. CLEANUP: This is critical. It wipes out the socket channel immediately 
-    // when the user profile switches or the component unmounts.
-    return () => {
-      supabaseClient.removeChannel(channel);
-    };
-  }, [user, profile, supabaseClient]);
-
-  return { reports, loading };
-}
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            console.log('Successfully connected to realtime reports stream.');
+          }
+        });
 
         return () => {
           supabaseClient.removeChannel(channel);
@@ -523,6 +468,10 @@
         <div className="spinner"></div>
         <div style={{ color: '#64748b', fontSize: '14px' }}>लोड हो रहा है...</div>
       </div>
+    );
+
+    const PrintButton = () => (
+      <button onClick={() => window.print()} style={{ background: "#1e293b", color: "#fff", border: "none", padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 10px rgba(0,0,0,0.1)" }}>🖨️ PDF</button>
     );
 
     // ============================================================
@@ -818,7 +767,7 @@
               {alreadySubmitted && (
                 <div style={{ background: "#fee2e2", color: "#991b1b", padding: "14px 18px", borderRadius: 10, border: "1.5px solid #ef4444", fontSize: 13, fontWeight: 700, marginTop: 16, display: "flex", gap: 10, alignItems: "center" }}>
                   <span style={{ fontSize: 24 }}>⛔</span>
-                  <div>आप <strong>{data.year}</strong> की <strong>{QUARTERS.find(q => q.id === data.quarter)?.label}</strong> की रिपोर्ट पहले ही जमा कर चुके हैं।</div>
+                  <div>आप <strong>{data.year}</strong> की <strong>{quarterLabel(data.quarter)}</strong> की रिपोर्ट पहले ही जमा कर चुके हैं।</div>
                 </div>
               )}
             </div>
@@ -1003,14 +952,14 @@
               <button onClick={() => { setSelected(null); setRemark(""); }} style={{ background: "none", border: "none", color: "#6366f1", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>← वापस सूची में</button>
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={() => { onEdit(selected); setSelected(null); }} style={{ background: "#f59e0b", color: "#fff", border: "none", padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 10px rgba(0,0,0,0.1)" }}>✏️ एडिट करें</button>
-                <button onClick={() => window.print()} style={{ background: "#1e293b", color: "#fff", border: "none", padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 10px rgba(0,0,0,0.1)" }}>🖨️ PDF</button>
+                <PrintButton />
               </div>
             </div>
 
             <div style={{ background: r.grad || r.color, borderRadius: 16, padding: "18px 22px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
                 <div style={{ fontSize: 18, fontWeight: 800, color: "#fff" }}>{selected.section_name}</div>
-                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.8)" }}>{QUARTERS.find(q => q.id === selected?.quarter)?.label || selected?.quarter || ''} · {selected.year} · {selected.ackId}</div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.8)" }}>{quarterLabel(selected?.quarter) || selected?.quarter || ''} · {selected.year} · {selected.ackId}</div>
               </div>
               <div style={{ background: "rgba(255,255,255,0.2)", borderRadius: 20, padding: "4px 14px", fontSize: 13, fontWeight: 700, color: "#fff" }}>{st.icon} {st.label}</div>
             </div>
@@ -1054,7 +1003,7 @@
                 <div key={rep.id} onClick={() => setSelected(rep)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 20px", borderBottom: "1px solid #f1f5f9", cursor: "pointer", transition: "background 0.15s" }}>
                   <div style={{ width: 40, height: 40, borderRadius: 12, background: c.bg, border: `1.5px solid ${c.border}`, display: "flex", alignItems: "center", justifyCcontent: "center", fontSize: 18, flexShrink: 0 }}>{c.icon}</div>
                   <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 700, color: "#1e293b" }}>{rep.section_name}</div>
-                    <div style={{ fontSize: 10, color: "#94a3b8" }}>{QUARTERS.find(q => q.id === rep?.quarter)?.label || rep?.quarter || ''} · {rep.year} · {rep.ackId}</div>
+                    <div style={{ fontSize: 10, color: "#94a3b8" }}>{quarterLabel(rep?.quarter) || rep?.quarter || ''} · {rep.year} · {rep.ackId}</div>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: st.bg, color: st.color, border: `1px solid ${st.color}40`, whiteSpace: "nowrap" }}>{st.icon} {st.label}</span>
@@ -1103,7 +1052,7 @@
         <div style={{ maxWidth: 800, margin: "0 auto" }}>
           <div className="no-print" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0, color: "#1e293b" }}>📑 समेकित रिपोर्ट</h2>
-            <button onClick={() => window.print()} style={{ background: "#1e293b", color: "#fff", border: "none", padding: "8px 16px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 10px rgba(0,0,0,0.1)" }}>🖨️ PDF</button>
+            <PrintButton />
           </div>
 
           <div className="no-print" style={{ background: "#fff", padding: 16, borderRadius: 12, display: "flex", gap: 12, marginBottom: 16, border: "1.5px solid #e2e8f0" }}>
@@ -1152,7 +1101,7 @@
               <tbody>
                 <tr>
                   <td style={{ width: "50%", border: "none" }}><strong>कार्यालय:</strong> पश्चिम रेलवे (विभिन्न अनुभाग)</td>
-                  <td style={{ width: "25%", border: "none" }}><strong>तिमाही:</strong> {QUARTERS.find(x => x.id === q)?.label}</td>
+                  <td style={{ width: "25%", border: "none" }}><strong>तिमाही:</strong> {quarterLabel(q)}</td>
                   <td style={{ width: "25%", border: "none" }}><strong>वर्ष:</strong> {y}</td>
                 </tr>
                 <tr>
@@ -1302,7 +1251,7 @@
                   {filteredReports.map(r => (
                     <tr key={r.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
                       <td style={{ padding: "10px", color: "#1e293b", fontWeight: "bold" }}>{r.section_name}</td>
-                      <td style={{ padding: "10px", color: "#64748b" }}>{QUARTERS.find(q => q.id === r?.quarter)?.label?.split('·')[0]} · {r.year}</td>
+                      <td style={{ padding: "10px", color: "#64748b" }}>{quarterLabel(r?.quarter)?.split('·')[0]} · {r.year}</td>
                       <td style={{ padding: "10px", textAlign: "center" }}>
                         <button onClick={() => onEditReport(r)} style={{ background: "#f59e0b", color: "#fff", border: "none", padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontWeight: "bold", fontSize: 11 }}>✏️ एडिट</button>
                       </td>
