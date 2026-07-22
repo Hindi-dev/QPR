@@ -102,21 +102,6 @@
       .page-break { page-break-before: always; }
       .print-box { border: none !important; box-shadow: none !important; }
     }
-    .marquee-container {
-      overflow: hidden;
-      white-space: nowrap;
-      box-sizing: border-box;
-      width: 100%;
-    }
-    .marquee-content {
-      display: inline-block;
-      padding-left: 100%;
-      animation: marquee 20s linear infinite;
-    }
-    @keyframes marquee {
-      0% { transform: translate(0, 0); }
-      100% { transform: translate(-100%, 0); }
-    }
     .spinner {
       border: 4px solid #f3f4f6;
       border-top: 4px solid #6366f1;
@@ -246,20 +231,19 @@
           .from('profiles')
           .select('*')
           .eq('id', userId)
-          .limit(1);
+          .maybeSingle();
 
         if (error) {
           setProfile(null);
           throw new Error(error.message);
         }
 
-        const profileRow = data?.[0];
-        if (!profileRow) {
+        if (!data) {
           setProfile(null);
           throw new Error(`No profile found for user.`);
         }
-        setProfile(profileRow);
-        return profileRow;
+        setProfile(data);
+        return data;
       }, []);
 
       useEffect(() => {
@@ -325,7 +309,7 @@
     function useAuth() { return useContext(AuthContext); }
 
     // ============================================================
-    //  DATA HOOKS (FIXED REALTIME CONFLICTS)
+    //  DATA HOOKS
     // ============================================================
     function useReports() {
       const [reports, setReports] = useState([]);
@@ -357,65 +341,20 @@
 
         fetchReports();
 
-        function useReports() {
-  const [reports, setReports] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const { user, profile, supabase: supabaseClient } = useAuth();
-
-  useEffect(() => {
-    // 1. Guard clause: Don't run anything if auth isn't ready
-    if (!user || !profile) {
-      setReports([]);
-      setLoading(false);
-      return;
-    }
-
-    const fetchReports = async () => {
-      let query = supabaseClient.from('reports').select('*');
-      if (profile?.role === 'SECTION') {
-        query = query.eq('section_name', profile.section_name);
-      } else if (profile?.role === 'AAO') {
-        query = query.in('status', ['PENDING_AAO', 'SAO_RETURNED']).eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'SAO') {
-        query = query.eq('status', 'AAO_APPROVED').eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'HINDI_CELL') {
-        query = query.eq('status', 'SAO_APPROVED');
-      }
-      const { data, error } = await query.order('created_at', { ascending: false });
-      if (!error) setReports(data || []);
-      setLoading(false);
-    };
-
-    // Run the initial data fetch
-    fetchReports();
-
-    // 2. STABLE CHANNEL NAME: Keep it fixed per-hook instance instance
-    // 3. SEPARATE CHAINING: Define everything explicitly, then subscribe
-    const channel = supabaseClient
-      .channel('db-reports-changes')
-      .on(
-        'postgres_changes', 
-        { event: '*', schema: 'public', table: 'reports' }, 
-        () => {
-          fetchReports();
-        }
-      );
-
-    channel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Successfully connected to realtime reports stream.');
-      }
-    });
-
-    // 4. CLEANUP: This is critical. It wipes out the socket channel immediately 
-    // when the user profile switches or the component unmounts.
-    return () => {
-      supabaseClient.removeChannel(channel);
-    };
-  }, [user, profile, supabaseClient]);
-
-  return { reports, loading };
-}
+        const channel = supabaseClient
+          .channel('db-reports-changes')
+          .on(
+            'postgres_changes', 
+            { event: '*', schema: 'public', table: 'reports' }, 
+            () => {
+              fetchReports();
+            }
+          )
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              console.log('Successfully connected to realtime reports stream.');
+            }
+          });
 
         return () => {
           supabaseClient.removeChannel(channel);
@@ -1239,7 +1178,7 @@
     }
 
     // ============================================================
-    //  MASTER CONTROL (FIXED QUERY BUILDER METHOD)
+    //  MASTER CONTROL
     // ============================================================
     function MasterControl({ reports, sections, onEditReport }) {
       const [searchQuery, setSearchQuery] = useState("");
@@ -1274,7 +1213,7 @@
           const { error } = await supabaseClient
             .from('reports')
             .delete()
-            .neq('status', 'SETTINGS'); // Fixed query selection syntax bug
+            .neq('status', 'SETTINGS');
           if (error) throw error;
           alert("✅ सभी रिपोर्टें मिटा दी गईं!");
         } catch (e) { alert("Error: " + e.message); }
