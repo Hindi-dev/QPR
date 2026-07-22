@@ -135,7 +135,7 @@
     //  CONSTANTS
     // ============================================================
     const ROLES = {
-      SECTION: { id: "SECTION", label: "DEO/Clerk", icon: "🏢", color: "#6366f1", bg: "#eef2ff", grad: "linear-gradient(135deg,#6366f1,#8b5cf6)" },
+      DEO: { id: "DEO", label: "DEO/Clerk", icon: "🏢", color: "#6366f1", bg: "#eef2ff", grad: "linear-gradient(135deg,#6366f1,#8b5cf6)" },
       AAO: { id: "AAO", label: "AAO", icon: "🔎", color: "#0ea5e9", bg: "#f0f9ff", grad: "linear-gradient(135deg,#0ea5e9,#6366f1)" },
       SAO: { id: "SAO", label: "SAO", icon: "✅", color: "#10b981", bg: "#ecfdf5", grad: "linear-gradient(135deg,#10b981,#0ea5e9)" },
       HINDI_CELL: { id: "HINDI_CELL", label: "हिंदी प्रकोष्ठ", icon: "🏛️", color: "#f59e0b", bg: "#fffbeb", grad: "linear-gradient(135deg,#f59e0b,#ef4444)" },
@@ -154,7 +154,7 @@
     };
 
     const WORKFLOW_ACTIONS = {
-      SECTION: {
+      DEO: {
         AAO_RETURNED: [{ label: "✅ AAO को पुनः भेजें", action: "PENDING_AAO", grad: "linear-gradient(135deg,#10b981,#0ea5e9)" }],
       },
       AAO: {
@@ -227,23 +227,36 @@
       const fetchProfile = useCallback(async (authUser) => {
         if (!authUser) return null;
         const userId = typeof authUser === "string" ? authUser : authUser?.id;
-        const { data, error } = await supabase
+        
+        // 1. Fetch the user's base profile data
+        const { data: profData, error: profErr } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', userId)
           .maybeSingle();
 
-        if (error) {
+        if (profErr || !profData) {
           setProfile(null);
-          throw new Error(error.message);
+          throw new Error(profErr?.message || "No profile found");
         }
 
-        if (!data) {
-          setProfile(null);
-          throw new Error(`No profile found for user.`);
+        // 2. Fetch the matched Hindi section name
+        if (profData.section_id) {
+          const { data: secData } = await supabase
+            .from('sections')
+            .select('section_name')
+            .eq('id', profData.section_id)
+            .maybeSingle();
+            
+          profData.section_name = secData?.section_name || `Section ${profData.section_id}`;
+          profData.mapped_section = profData.section_name;
+        } else {
+          profData.section_name = "सभी अनुभाग"; // Hindi Cell handles all
+          profData.mapped_section = "सभी अनुभाग";
         }
-        setProfile(data);
-        return data;
+
+        setProfile(profData);
+        return profData;
       }, []);
 
       useEffect(() => {
@@ -325,7 +338,7 @@
 
         const fetchReports = async () => {
           let query = supabaseClient.from('reports').select('*');
-          if (profile?.role === 'SECTION') {
+          if (profile?.role === 'DEO') {
             query = query.eq('section_name', profile.section_name);
           } else if (profile?.role === 'AAO') {
             query = query.in('status', ['PENDING_AAO', 'SAO_RETURNED']).eq('section_name', profile.mapped_section);
@@ -378,10 +391,9 @@
         const fetchSections = async () => {
           const { data, error } = await supabaseClient
             .from('sections')
-            .select('name')
-            .eq('is_active', true)
-            .order('name');
-          if (!error) setSections(data.map(s => s.name));
+            .select('section_name')
+            .order('id');
+          if (!error && data) setSections(data.map(s => s.section_name));
           setLoading(false);
         };
         fetchSections();
@@ -469,12 +481,12 @@
     // ============================================================
     function WorkflowPipeline({ currentRole }) {
       const steps = [
-        { role: "SECTION", label: "अनुभाग", icon: "🏢" },
+        { role: "DEO", label: "अनुभाग", icon: "🏢" },
         { role: "AAO", label: "AAO", icon: "🔎" },
         { role: "SAO", label: "SAO", icon: "✅" },
         { role: "HINDI_CELL", label: "हिंदी प्रकोष्ठ", icon: "🏛️" }
       ];
-      const currentIdx = ["SECTION", "AAO", "SAO", "HINDI_CELL"].indexOf(currentRole);
+      const currentIdx = ["DEO", "AAO", "SAO", "HINDI_CELL"].indexOf(currentRole);
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "10px 0" }}>
           {steps.map((s, i) => {
@@ -567,7 +579,7 @@
     function Dashboard({ reports, user, setView, sections }) {
       const r = ROLES[user.role];
 
-      const myReports = user.role === 'SECTION' ? reports.filter(x => x.section_name === user.section_name) : reports;
+      const myReports = user.role === 'DEO' ? reports.filter(x => x.section_name === user.section_name) : reports;
 
       const inboxCount = {
         AAO: reports.filter(x => ['PENDING_AAO', 'SAO_RETURNED'].includes(x.status) && x.section_name === user.mapped_section).length,
@@ -599,7 +611,7 @@
             ))}
           </div>
 
-          {user.role !== "SECTION" && pendingForMe > 0 && (
+          {user.role !== "DEO" && pendingForMe > 0 && (
             <button onClick={() => setView("inbox")} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: r.grad || r.color, borderRadius: 14, padding: "16px 22px", border: "none", cursor: "pointer", color: "#fff", boxShadow: `0 4px 18px ${r.color}40` }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}><span style={{ fontSize: 28 }}>📥</span>
                 <div style={{ textAlign: "left" }}><div style={{ fontWeight: 800, fontSize: 15 }}>{pendingForMe} रिपोर्ट आपकी प्रतीक्षा में</div></div>
@@ -677,9 +689,9 @@
 
         if (!initialData) {
           report.status = "PENDING_AAO";
-          report.timeline = [{ ts: new Date().toISOString(), role: "SECTION", name: user.section_name, action: "रिपोर्ट जमा की और AAO को भेजी", remark: "" }];
+          report.timeline = [{ ts: new Date().toISOString(), role: "DEO", name: user.section_name, action: "रिपोर्ट जमा की और AAO को भेजी", remark: "" }];
         } else {
-          if (user.role === "SECTION" && report.status === "AAO_RETURNED") report.status = "PENDING_AAO";
+          if (user.role === "DEO" && report.status === "AAO_RETURNED") report.status = "PENDING_AAO";
           if (user.role === "AAO" && report.status === "SAO_RETURNED") report.status = "AAO_APPROVED";
           report.timeline = [...(report.timeline || []), { ts: new Date().toISOString(), role: user.role, name: user.section_name || user.role, action: "रिपोर्ट में संशोधन किया गया (Edited)", remark: "" }];
         }
@@ -973,15 +985,15 @@
       return (
         <div style={{ background: "#fff", borderRadius: 18, border: "1.5px solid #e2e8f0", overflow: "hidden" }}>
           <div style={{ background: r.grad || r.color, padding: "16px 22px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h2 style={{ fontSize: 15, fontWeight: 800, margin: 0, color: "#fff" }}>{user.role === "SECTION" ? "📋 मेरी रिपोर्टें" : "📥 आवक रिपोर्टें"}</h2>
+            <h2 style={{ fontSize: 15, fontWeight: 800, margin: 0, color: "#fff" }}>{user.role === "DEO" ? "📋 मेरी रिपोर्टें" : "📥 आवक रिपोर्टें"}</h2>
           </div>
           <div style={{ padding: "12px 16px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 अनुभाग या पावती संख्या से खोजें..." style={{ width: "100%", boxSizing: "border-box", padding: "8px 12px", borderRadius: 8, border: "1.5px solid #e2e8f0", fontSize: 13 }} />
           </div>
           {filtered.length === 0 ? (
             <div style={{ textAlign: "center", padding: 48, color: "#94a3b8" }}>
-              <div style={{ fontSize: 40 }}>{user.role === "SECTION" ? "📂" : "📭"}</div>
-              <div style={{ marginTop: 10, fontSize: 14 }}>{user.role === "SECTION" ? "अभी तक कोई रिपोर्ट नहीं।" : "अभी कोई रिपोर्ट प्रतीक्षा में नहीं।"}</div>
+              <div style={{ fontSize: 40 }}>{user.role === "DEO" ? "📂" : "📭"}</div>
+              <div style={{ marginTop: 10, fontSize: 14 }}>{user.role === "DEO" ? "अभी तक कोई रिपोर्ट नहीं।" : "अभी कोई रिपोर्ट प्रतीक्षा में नहीं।"}</div>
             </div>
           ) : (
             filtered.map((rep, i) => {
@@ -1182,28 +1194,10 @@
     // ============================================================
     function MasterControl({ reports, sections, onEditReport }) {
       const [searchQuery, setSearchQuery] = useState("");
-      const [newSec, setNewSec] = useState("");
       const [isClearing, setIsClearing] = useState(false);
       const { supabase: supabaseClient } = useAuth();
 
       const filteredReports = reports.filter(r => (r.section_name && r.section_name.includes(searchQuery)) || (r.year && r.year.includes(searchQuery)));
-
-      const handleAddSection = async () => {
-        if (!newSec.trim()) return;
-        if (sections.includes(newSec.trim())) {
-          alert("यह अनुभाग पहले से मौजूद है!");
-          return;
-        }
-        const { error } = await supabaseClient.from('sections').insert([{ name: newSec.trim() }]);
-        if (error) alert("Error: " + error.message);
-        else { setNewSec(""); }
-      };
-
-      const handleDeleteSection = async (name) => {
-        if (!confirm(`'${name}' को हटाएं?`)) return;
-        const { error } = await supabaseClient.from('sections').update({ is_active: false }).eq('name', name);
-        if (error) alert("Error: " + error.message);
-      };
 
       const handleResetAll = async () => {
         const pass = prompt("⚠️ 'RESET' टाइप करें:");
@@ -1255,22 +1249,6 @@
             </div>
           </div>
 
-          <div style={{ background: "#fff", border: "1.5px solid #e2e8f0", borderRadius: 16, padding: 24 }}>
-            <h2 style={{ color: "#1e293b", margin: "0 0 16px", fontSize: 18, fontWeight: 800 }}>⚙️ अनुभाग प्रबंधन</h2>
-            <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-              <input value={newSec} onChange={e => setNewSec(e.target.value)} placeholder="नया अनुभाग..." style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: "1.5px solid #cbd5e1", outline: "none", fontSize: 14 }} />
-              <button onClick={handleAddSection} style={{ background: "#6366f1", color: "#fff", border: "none", padding: "0 24px", borderRadius: 10, fontWeight: "bold", cursor: "pointer", fontSize: 14 }}>+ जोड़ें</button>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-              {sections.map(s => (
-                <div key={s} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 700, color: "#475569" }}>
-                  <span>{s}</span>
-                  <button onClick={() => handleDeleteSection(s)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>×</button>
-                </div>
-              ))}
-            </div>
-          </div>
-
           <div style={{ background: "#fee2e2", border: "2px solid #ef4444", borderRadius: 16, padding: 24 }}>
             <h2 style={{ color: "#991b1b", margin: "0 0 10px", fontSize: 18, fontWeight: 800 }}>⚠️ डेंजर ज़ोन</h2>
             <p style={{ color: "#7f1d1d", fontSize: 13, marginBottom: 20 }}>सभी रिपोर्टें हमेशा के लिए डिलीट करें।</p>
@@ -1307,7 +1285,8 @@
       const { sections, loading: sectionsLoading } = useSections();
       const { supabase: supabaseClient } = useAuth();
 
-      const [view, setView] = useState('dashboard');
+      // Ensure DEOs automatically see the form instead of the dashboard upon login
+      const [view, setView] = useState(profile.role === 'DEO' ? 'form' : 'dashboard');
       const [editingReport, setEditingReport] = useState(null);
 
       const handleSaveReport = async (reportData) => {
@@ -1372,8 +1351,8 @@
             <div style={{ display: 'flex', gap: '4px' }}>
               {[
                 { id: 'dashboard', icon: '📊', label: 'डैशबोर्ड' },
-                ...(profile.role === 'SECTION' ? [{ id: 'form', icon: '📝', label: 'नई रिपोर्ट' }] : []),
-                { id: 'inbox', icon: '📥', label: profile.role === 'SECTION' ? 'मेरी रिपोर्टें' : 'आवक रिपोर्टें' },
+                ...(profile.role === 'DEO' ? [{ id: 'form', icon: '📝', label: 'नई रिपोर्ट' }] : []),
+                { id: 'inbox', icon: '📥', label: profile.role === 'DEO' ? 'मेरी रिपोर्टें' : 'आवक रिपोर्टें' },
                 ...(profile.role === 'HINDI_CELL' ? [{ id: 'consolidated', icon: '📑', label: 'समेकित' }] : []),
                 ...(profile.role === 'HINDI_CELL' ? [{ id: 'master', icon: '⚙️', label: 'मास्टर' }] : []),
               ].map(tab => (
