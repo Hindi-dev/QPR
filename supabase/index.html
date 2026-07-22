@@ -357,65 +357,21 @@
 
         fetchReports();
 
-        function useReports() {
-  const [reports, setReports] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const { user, profile, supabase: supabaseClient } = useAuth();
+        const channel = supabaseClient
+          .channel('db-reports-changes')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'reports' },
+            () => {
+              fetchReports();
+            }
+          );
 
-  useEffect(() => {
-    // 1. Guard clause: Don't run anything if auth isn't ready
-    if (!user || !profile) {
-      setReports([]);
-      setLoading(false);
-      return;
-    }
-
-    const fetchReports = async () => {
-      let query = supabaseClient.from('reports').select('*');
-      if (profile?.role === 'SECTION') {
-        query = query.eq('section_name', profile.section_name);
-      } else if (profile?.role === 'AAO') {
-        query = query.in('status', ['PENDING_AAO', 'SAO_RETURNED']).eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'SAO') {
-        query = query.eq('status', 'AAO_APPROVED').eq('section_name', profile.mapped_section);
-      } else if (profile?.role === 'HINDI_CELL') {
-        query = query.eq('status', 'SAO_APPROVED');
-      }
-      const { data, error } = await query.order('created_at', { ascending: false });
-      if (!error) setReports(data || []);
-      setLoading(false);
-    };
-
-    // Run the initial data fetch
-    fetchReports();
-
-    // 2. STABLE CHANNEL NAME: Keep it fixed per-hook instance instance
-    // 3. SEPARATE CHAINING: Define everything explicitly, then subscribe
-    const channel = supabaseClient
-      .channel('db-reports-changes')
-      .on(
-        'postgres_changes', 
-        { event: '*', schema: 'public', table: 'reports' }, 
-        () => {
-          fetchReports();
-        }
-      );
-
-    channel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Successfully connected to realtime reports stream.');
-      }
-    });
-
-    // 4. CLEANUP: This is critical. It wipes out the socket channel immediately 
-    // when the user profile switches or the component unmounts.
-    return () => {
-      supabaseClient.removeChannel(channel);
-    };
-  }, [user, profile, supabaseClient]);
-
-  return { reports, loading };
-}
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            console.log('Successfully connected to realtime reports stream.');
+          }
+        });
 
         return () => {
           supabaseClient.removeChannel(channel);
